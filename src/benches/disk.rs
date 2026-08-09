@@ -1,11 +1,14 @@
 //! Benchmark 7: reading a [u8; 32] from disk.
 //!
-//! A 1 GiB file of pseudorandom data is written with F_NOCACHE set (macOS's
-//! O_DIRECT equivalent) so its pages never enter the page cache. Then:
-//!   - cold:   32-byte preads at random page-aligned offsets through an
-//!             F_NOCACHE fd -> real SSD latency per read.
+//! A 1 GiB file of pseudorandom data is written and evicted from the page
+//! cache (macOS: F_NOCACHE on the writing fd; Linux: posix_fadvise DONTNEED
+//! after sync). Then:
+//!   - cold:   reads at random page-aligned offsets through an uncached fd
+//!             (macOS: 32 B preads with F_NOCACHE; Linux: 4 KiB O_DIRECT
+//!             preads, since O_DIRECT requires block-aligned lengths)
+//!             -> real SSD latency per read.
 //!   - cached: the file is warmed into the page cache through a normal fd,
-//!             then the same random preads -> syscall + memcpy cost.
+//!             then random 32 B preads -> syscall + memcpy cost.
 //! Cold runs first so warming can't pollute it.
 
 use crate::harness::{bench, Stat};
@@ -19,9 +22,44 @@ use std::os::unix::io::AsRawFd;
 const FILE_SIZE: u64 = 1 << 30; // 1 GiB
 const BLOCK: usize = 4 << 20; // 4 MiB write chunks
 
+#[cfg(target_os = "macos")]
 fn set_nocache(f: &File, on: bool) {
     let r = unsafe { libc::fcntl(f.as_raw_fd(), libc::F_NOCACHE, on as libc::c_int) };
     assert_ne!(r, -1, "fcntl(F_NOCACHE) failed");
+}
+
+#[cfg(target_os = "linux")]
+fn drop_cache(f: &File) {
+    let r = unsafe { libc::posix_fadvise(f.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED) };
+    assert_eq!(r, 0, "posix_fadvise(POSIX_FADV_DONTNEED) failed");
+}
+
+/// Page-aligned heap buffer, required for O_DIRECT reads on Linux.
+#[cfg(target_os = "linux")]
+struct AlignedBuf {
+    ptr: *mut u8,
+    layout: std::alloc::Layout,
+}
+
+#[cfg(target_os = "linux")]
+impl AlignedBuf {
+    fn new(len: usize) -> Self {
+        let layout = std::alloc::Layout::from_size_align(len, 4096).unwrap();
+        let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+        assert!(!ptr.is_null(), "aligned alloc failed");
+        AlignedBuf { ptr, layout }
+    }
+
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.layout.size()) }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for AlignedBuf {
+    fn drop(&mut self) {
+        unsafe { std::alloc::dealloc(self.ptr, self.layout) }
+    }
 }
 
 fn random_page_offsets(count: usize) -> Vec<u64> {
@@ -44,9 +82,10 @@ pub fn run() -> Vec<Stat> {
             .truncate(true)
             .open(&path)
             .expect("create test file");
+        #[cfg(target_os = "macos")]
         set_nocache(&f, true); // keep the written pages out of the page cache
 
-        // Pseudorandom block so APFS compression can't shrink the file.
+        // Pseudorandom block so filesystem compression can't shrink the file.
         let mut block = vec![0u8; BLOCK];
         rand::thread_rng().fill(&mut block[..]);
         let mut written = 0u64;
@@ -56,26 +95,56 @@ pub fn run() -> Vec<Stat> {
             written += BLOCK as u64;
         }
         f.sync_all().expect("sync");
+        #[cfg(target_os = "linux")]
+        drop_cache(&f); // evict the written pages from the page cache
     }
 
     // --- cold reads ---
     const COLD_READS: usize = 2_000;
-    let cold_file = File::open(&path).expect("open");
-    set_nocache(&cold_file, true);
     let offsets = random_page_offsets(COLD_READS);
-    let cold = bench(
-        "disk: [u8;32] cold read (F_NOCACHE)",
-        "random 32 B preads, hits the SSD",
-        5,
-        COLD_READS as u64,
-        || {
-            let mut buf = [0u8; 32];
-            for &off in &offsets {
-                cold_file.read_exact_at(&mut buf, off).expect("pread");
-                black_box(&buf);
-            }
-        },
-    );
+
+    #[cfg(target_os = "macos")]
+    let cold = {
+        let cold_file = File::open(&path).expect("open");
+        set_nocache(&cold_file, true);
+        bench(
+            "disk: [u8;32] cold read (F_NOCACHE)",
+            "random 32 B preads, hits the SSD",
+            5,
+            COLD_READS as u64,
+            || {
+                let mut buf = [0u8; 32];
+                for &off in &offsets {
+                    cold_file.read_exact_at(&mut buf, off).expect("pread");
+                    black_box(&buf);
+                }
+            },
+        )
+    };
+
+    #[cfg(target_os = "linux")]
+    let cold = {
+        use std::os::unix::fs::OpenOptionsExt;
+        let cold_file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECT)
+            .open(&path)
+            .expect("open O_DIRECT");
+        let mut buf = AlignedBuf::new(4096);
+        bench(
+            "disk: [u8;32] cold read (O_DIRECT)",
+            "random 4 KiB preads, hits the SSD",
+            5,
+            COLD_READS as u64,
+            || {
+                let page = buf.as_mut_slice();
+                for &off in &offsets {
+                    cold_file.read_exact_at(page, off).expect("pread");
+                    black_box(&page[..32]);
+                }
+            },
+        )
+    };
 
     // --- cached reads ---
     eprintln!("  warming file into page cache ...");
@@ -107,7 +176,6 @@ pub fn run() -> Vec<Stat> {
         },
     );
 
-    drop(cold_file);
     drop(cached_file);
     let _ = fs::remove_file(&path);
 
