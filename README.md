@@ -19,7 +19,8 @@ cargo run --release
 | 4 | Function call | Dependent chain through a `#[inline(never)]` fn (direct `bl`) and through a black-boxed fn pointer (indirect `blr`). |
 | 5 | `[u8;32]` alloc + dealloc | Stack: a local forced to have an address via `black_box` (the sp bump itself is free). Heap split: a batched `Box::into_raw` pass times allocation alone, then a `Box::from_raw` pass times deallocation alone. Heap paired: `Box::new` + drop per iteration; `black_box` on the pointer keeps LLVM from eliding malloc/free. |
 | 6 | Thread context switch | Two threads ping-pong over mpsc channels; round trip / 2. |
-| 7 | `[u8;32]` from disk | 1 GiB pseudorandom file written with `F_NOCACHE` (never enters page cache). Cold: random 32 B preads through an `F_NOCACHE` fd (real SSD latency). Cached: same reads after warming the page cache (syscall + copy). |
+| 7 | Cache line core-to-core | Two threads spin on one shared atomic counter (alone in its 128 B-aligned line), taking turns incrementing it. Each store forces a coherence-protocol ownership transfer to the other core — no syscalls, nobody blocks. Round trip / 2 = one cache-to-cache transfer. |
+| 8 | `[u8;32]` from disk | 1 GiB pseudorandom file written with `F_NOCACHE` (never enters page cache). Cold: random 32 B preads through an `F_NOCACHE` fd (real SSD latency). Cached: same reads after warming the page cache (syscall + copy). |
 
 ## Sample results (Apple M1 Max, macOS)
 
@@ -40,6 +41,7 @@ alloc: Box<[u8;32]> malloc only                   7.1  ns
 alloc: Box<[u8;32]> free only                    11.3  ns
 alloc: Box<[u8;32]> new + drop (pair)            16    ns
 thread: context switch (ping-pong)             1540    ns
+coherence: cache line core-to-core               37    ns
 disk: [u8;32] cold read (F_NOCACHE)           99000    ns
 disk: [u8;32] cached read (page cache)          590    ns
 ```

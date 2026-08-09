@@ -151,27 +151,30 @@ fn main() {
 
     let mut stats = Vec::new();
 
-    eprintln!("[1/7] memory hierarchy (pointer chase) ...");
+    eprintln!("[1/8] memory hierarchy (pointer chase) ...");
     stats.extend(benches::memory::run());
 
-    eprintln!("[2/7] cpu add ...");
+    eprintln!("[2/8] cpu add ...");
     let alu = benches::alu::run();
     let ghz = benches::alu::estimated_ghz(alu[0].median_ns);
     stats.extend(alu);
 
-    eprintln!("[3/7] branches ...");
+    eprintln!("[3/8] branches ...");
     stats.extend(benches::branch::run());
 
-    eprintln!("[4/7] function calls ...");
+    eprintln!("[4/8] function calls ...");
     stats.extend(benches::call::run());
 
-    eprintln!("[5/7] allocation ...");
+    eprintln!("[5/8] allocation ...");
     stats.extend(benches::alloc::run());
 
-    eprintln!("[6/7] thread context switch ...");
+    eprintln!("[6/8] thread context switch ...");
     stats.extend(benches::thread::run());
 
-    eprintln!("[7/7] disk reads ...");
+    eprintln!("[7/8] cache line core-to-core ...");
+    stats.extend(benches::coherence::run());
+
+    eprintln!("[8/8] disk reads ...");
     stats.extend(benches::disk::run());
 
     println!();

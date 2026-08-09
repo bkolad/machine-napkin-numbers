@@ -2,6 +2,7 @@ pub mod alloc;
 pub mod alu;
 pub mod branch;
 pub mod call;
+pub mod coherence;
 pub mod disk;
 pub mod memory;
 pub mod thread;
