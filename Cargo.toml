@@ -1,0 +1,12 @@
+[package]
+name = "machine-napkin-numbers"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libc = "0.2"
+rand = "0.8"
+
+[profile.release]
+codegen-units = 1
+lto = true
