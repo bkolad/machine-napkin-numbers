@@ -13,6 +13,7 @@ cargo run --release
 | # | Benchmark | Technique |
 |---|-----------|-----------|
 | 1 | `[u8;32]` fetch from L1 / L2 / L3(SLC) / cold RAM | Pointer chase over a randomly-linked cycle: each load address depends on the previous load, defeating pipelining and the prefetcher. Buffer size (16 KiB / 1 MiB / 32 MiB / 512 MiB) selects the tier. |
+| 1b | single-core DRAM bandwidth | Sequential sweep of a 1 GiB buffer via four interleaved streams with independent accumulators — the prefetcher-friendly opposite of the pointer chase. Reported as ns per 32 B and GB/s. |
 | 2 | CPU add | Dependent Fibonacci chain (`x+=y; y+=x`) for latency; 4 independent chains for throughput. |
 | 3 | `if` predicted vs mispredicted | Same loop over an alternating pattern (always predicted) vs random 50/50 (mispredicted ~half the time); `black_box` in one arm prevents branchless if-conversion. Penalty ≈ 2×delta. |
 | 4 | Function call | Dependent chain through a `#[inline(never)]` fn (direct `bl`) and through a black-boxed fn pointer (indirect `blr`). |
@@ -27,6 +28,7 @@ mem: [u8;32] from L1                              2.1  ns
 mem: [u8;32] from L2                              6.5  ns
 mem: [u8;32] from L3/SLC                        112    ns
 mem: [u8;32] from cold RAM                      135    ns
+mem: [u8;32] sequential stream (1 core)           0.55 ns   (~60 GB/s single-core DRAM bandwidth)
 cpu: add (dependent chain)                        0.33 ns   (~1 cycle @ 3.1 GHz)
 cpu: add (independent, throughput)                0.10 ns   (~3 adds/cycle sustained)
 branch: if, predicted                             0.32 ns

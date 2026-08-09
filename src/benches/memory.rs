@@ -58,6 +58,58 @@ fn chase(nodes: &[Node], steps: u64) -> u64 {
     idx
 }
 
+/// Sequential sum over the whole buffer with independent accumulators, so
+/// loads pipeline and the prefetcher streams — measures single-core DRAM
+/// bandwidth rather than latency. LLVM vectorizes this to NEON/SIMD loads.
+fn stream_read(buf: &[u64]) -> u64 {
+    // Four independent sequential streams over the buffer's quarters keep
+    // more misses in flight than one stream the prefetcher must chase.
+    let q = buf.len() / 4;
+    let (s0, rest) = buf.split_at(q);
+    let (s1, rest) = rest.split_at(q);
+    let (s2, s3) = rest.split_at(q);
+    let mut acc = [0u64; 16];
+    for (((c0, c1), c2), c3) in s0
+        .chunks_exact(4)
+        .zip(s1.chunks_exact(4))
+        .zip(s2.chunks_exact(4))
+        .zip(s3.chunks_exact(4))
+    {
+        for i in 0..4 {
+            acc[i] = acc[i].wrapping_add(c0[i]);
+            acc[4 + i] = acc[4 + i].wrapping_add(c1[i]);
+            acc[8 + i] = acc[8 + i].wrapping_add(c2[i]);
+            acc[12 + i] = acc[12 + i].wrapping_add(c3[i]);
+        }
+    }
+    acc.iter().fold(0, |a, b| a ^ b)
+}
+
+fn bandwidth() -> Stat {
+    const BYTES: usize = 1 << 30; // 1 GiB, far beyond every cache
+    eprintln!("  building 1 GiB streaming buffer ...");
+    // Nonzero fill: untouched zero pages would all alias the shared zero
+    // page and be served from cache instead of DRAM.
+    let buf: Vec<u64> = (0..BYTES / 8).map(|i| i as u64).collect();
+
+    let chunks = (BYTES / 32) as u64; // report per [u8; 32] fetched
+    let mut stat = bench(
+        "mem: [u8;32] sequential stream (1 core)",
+        "",
+        5,
+        chunks,
+        || {
+            black_box(stream_read(&buf));
+        },
+    );
+    // 1 byte per ns == 1 GB/s, so GB/s = 32 / (ns per 32 B chunk).
+    stat.note = format!(
+        "single-core DRAM bandwidth ~{:.0} GB/s, 1 GiB sweep",
+        32.0 / stat.median_ns
+    );
+    stat
+}
+
 pub fn run() -> Vec<Stat> {
     // Sized for Apple M1 Max: L1d 128 KiB (P-core), L2 12 MiB (P-cluster),
     // SLC ("L3") 48 MiB. Small enough / large enough to also land in the
@@ -97,5 +149,6 @@ pub fn run() -> Vec<Stat> {
             black_box(chase(&nodes, steps));
         }));
     }
+    stats.push(bandwidth());
     stats
 }
