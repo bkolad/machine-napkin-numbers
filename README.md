@@ -16,7 +16,7 @@ cargo run --release
 | 2 | CPU add | Dependent Fibonacci chain (`x+=y; y+=x`) for latency; 4 independent chains for throughput. |
 | 3 | `if` predicted vs mispredicted | Same loop over an alternating pattern (always predicted) vs random 50/50 (mispredicted ~half the time); `black_box` in one arm prevents branchless if-conversion. Penalty ≈ 2×delta. |
 | 4 | Function call | Dependent chain through a `#[inline(never)]` fn (direct `bl`) and through a black-boxed fn pointer (indirect `blr`). |
-| 5 | `[u8;32]` alloc + dealloc | `Box::new` + drop per iteration; `black_box` on the pointer keeps LLVM from eliding malloc/free. |
+| 5 | `[u8;32]` alloc + dealloc | Stack: a local forced to have an address via `black_box` (the sp bump itself is free). Heap split: a batched `Box::into_raw` pass times allocation alone, then a `Box::from_raw` pass times deallocation alone. Heap paired: `Box::new` + drop per iteration; `black_box` on the pointer keeps LLVM from eliding malloc/free. |
 | 6 | Thread context switch | Two threads ping-pong over mpsc channels; round trip / 2. |
 | 7 | `[u8;32]` from disk | 1 GiB pseudorandom file written with `F_NOCACHE` (never enters page cache). Cold: random 32 B preads through an `F_NOCACHE` fd (real SSD latency). Cached: same reads after warming the page cache (syscall + copy). |
 
@@ -33,7 +33,10 @@ branch: if, predicted                             0.32 ns
 branch: if, random 50/50                          3.2  ns
 branch: mispredict penalty (derived)              5.8  ns   (~18 cycles)
 call: direct / fn pointer                         0.97 ns   (~3 cycles)
-alloc: Box<[u8;32]> new + drop                   16    ns
+alloc: [u8;32] on the stack                       0.48 ns   (sp bump is free; 32 B frame write)
+alloc: Box<[u8;32]> malloc only                   7.1  ns
+alloc: Box<[u8;32]> free only                    11.3  ns
+alloc: Box<[u8;32]> new + drop (pair)            16    ns
 thread: context switch (ping-pong)             1540    ns
 disk: [u8;32] cold read (F_NOCACHE)           99000    ns
 disk: [u8;32] cached read (page cache)          590    ns
