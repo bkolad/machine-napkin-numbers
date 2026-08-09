@@ -151,6 +151,9 @@ fn main() {
 
     let mut stats = Vec::new();
 
+    eprintln!("[0/8] cache-size sweep (pointer chase vs working-set size) ...");
+    let sweep = benches::cachesize::run();
+
     eprintln!("[1/8] memory hierarchy (pointer chase) ...");
     stats.extend(benches::memory::run());
 
@@ -183,6 +186,34 @@ fn main() {
         "{:<26} {:.2} GHz (est. from add-chain latency, 1 cycle/add)",
         "CPU frequency", ghz
     );
+
+    println!();
+    println!("measured cache sizes (latency jumps in a pointer-chase sweep)");
+    println!("{}", "-".repeat(60));
+    if sweep.boundaries.is_empty() {
+        println!("no clear boundaries detected");
+    } else {
+        for (tier, bytes) in &sweep.boundaries {
+            println!(
+                "{:<26} ~{} (largest set still fast)",
+                tier,
+                benches::cachesize::human(*bytes)
+            );
+        }
+    }
+    print!("latency curve: ");
+    for (i, p) in sweep.points.iter().enumerate() {
+        if i % 4 == 0 {
+            println!();
+            print!("  ");
+        }
+        print!(
+            "{:>9} {:>7.2}ns |",
+            benches::cachesize::human(p.bytes),
+            p.ns
+        );
+    }
+    println!();
 
     harness::print_table(&stats);
 

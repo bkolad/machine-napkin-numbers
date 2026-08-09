@@ -1,6 +1,7 @@
 pub mod alloc;
 pub mod alu;
 pub mod branch;
+pub mod cachesize;
 pub mod call;
 pub mod coherence;
 pub mod disk;

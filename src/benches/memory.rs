@@ -14,12 +14,12 @@ use std::hint::black_box;
 // full line as the stride also avoids adjacent-line prefetch effects.
 #[repr(C, align(128))]
 #[derive(Clone)]
-struct Node {
+pub(crate) struct Node {
     next: u64,
     payload: [u8; 32],
 }
 
-fn make_cycle(bytes: usize) -> Vec<Node> {
+pub(crate) fn make_cycle(bytes: usize) -> Vec<Node> {
     let n = bytes / std::mem::size_of::<Node>();
     assert!(n >= 2);
     let mut nodes = vec![
@@ -43,7 +43,7 @@ fn make_cycle(bytes: usize) -> Vec<Node> {
 
 /// Follow the chain for `steps` hops, reading the full 32-byte payload
 /// at every hop. Returns an accumulator so nothing can be optimized out.
-fn chase(nodes: &[Node], steps: u64) -> u64 {
+pub(crate) fn chase(nodes: &[Node], steps: u64) -> u64 {
     let mut idx = 0u64;
     let mut acc = 0u64;
     for _ in 0..steps {

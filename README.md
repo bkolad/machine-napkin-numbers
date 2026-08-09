@@ -13,13 +13,14 @@ cargo run --release
 | # | Benchmark | Technique |
 |---|-----------|-----------|
 | 1 | `[u8;32]` fetch from L1 / L2 / L3(SLC) / cold RAM | Pointer chase over a randomly-linked cycle: each load address depends on the previous load, defeating pipelining and the prefetcher. Buffer size (16 KiB / 1 MiB / 32 MiB / 512 MiB) selects the tier. |
+| 0 | Cache-size detection | Pointer-chase latency swept across 27 working-set sizes (8 KiB – 128 MiB). Latency is flat within a tier and jumps at each capacity boundary; jump locations are reported as measured L1/L2/L3 sizes, printed next to the OS-reported values. Note these are *effective* capacities — a shared or heavily associative cache measures smaller than its nameplate. |
 | 1b | single-core DRAM bandwidth | Sequential sweep of a 1 GiB buffer via four interleaved streams with independent accumulators — the prefetcher-friendly opposite of the pointer chase. Reported as ns per 32 B and GB/s. |
 | 2 | CPU add | Dependent Fibonacci chain (`x+=y; y+=x`) for latency; 4 independent chains for throughput. |
 | 3 | `if` predicted vs mispredicted | Same loop over an alternating pattern (always predicted) vs random 50/50 (mispredicted ~half the time); `black_box` in one arm prevents branchless if-conversion. Penalty ≈ 2×delta. |
 | 4 | Function call | Dependent chain through a `#[inline(never)]` fn (direct `bl`) and through a black-boxed fn pointer (indirect `blr`). |
 | 5 | `[u8;32]` alloc + dealloc | Stack: a local forced to have an address via `black_box` (the sp bump itself is free). Heap split: a batched `Box::into_raw` pass times allocation alone, then a `Box::from_raw` pass times deallocation alone. Heap paired: `Box::new` + drop per iteration; `black_box` on the pointer keeps LLVM from eliding malloc/free. |
 | 6 | Thread context switch | Two threads ping-pong over mpsc channels; round trip / 2. |
-| 7 | Cache line core-to-core | Two threads spin on one shared atomic counter (alone in its 128 B-aligned line), taking turns incrementing it. Each store forces a coherence-protocol ownership transfer to the other core — no syscalls, nobody blocks. Round trip / 2 = one cache-to-cache transfer. |
+| 7 | Atomics & cache line core-to-core | Three rows. Uncontended: single-thread `fetch_add` on a private line (L1-resident RMW baseline). One writer / one reader: a thread streams stores while the measured thread polls with loads — reads batch on a shared copy between invalidations, so the average is far below one transfer per read. Ping-pong: two threads take strict turns incrementing one atomic, forcing an ownership transfer per store; round trip / 2 = one cache-to-cache transfer. All atomics sit alone in a 128 B-aligned line to avoid false sharing. |
 | 8 | `[u8;32]` from disk | 1 GiB pseudorandom file written with `F_NOCACHE` (never enters page cache). Cold: random 32 B preads through an `F_NOCACHE` fd (real SSD latency). Cached: same reads after warming the page cache (syscall + copy). |
 
 ## Sample results (Apple M1 Max, macOS)
@@ -41,6 +42,8 @@ alloc: Box<[u8;32]> malloc only                   7.1  ns
 alloc: Box<[u8;32]> free only                    11.3  ns
 alloc: Box<[u8;32]> new + drop (pair)            16    ns
 thread: context switch (ping-pong)             1540    ns
+atomic: fetch_add, uncontended                    2.1  ns
+atomic: read while other core writes              1.3  ns   (reads batch between invalidations)
 coherence: cache line core-to-core               37    ns
 disk: [u8;32] cold read (F_NOCACHE)           99000    ns
 disk: [u8;32] cached read (page cache)          590    ns
